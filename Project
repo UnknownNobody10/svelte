@@ -1,0 +1,253 @@
+npm install
+npm run build
+<script>
+  import { onMount } from 'svelte';
+  import * as d3 from 'd3';
+  import * as topojson from 'topojson-client';
+
+  let mapContainer;
+  let selectedMaterial = "Uranium-238";
+  let timePassed = 0;
+  let timerSpeed = 1;
+  let simulationRunning = false;
+  let hoverInfo = { visible: false, x: 0, y: 0, text: "" };
+  let populationAffected = 0;
+
+  const averageRuralDensity = 36;
+
+  const cities = [
+    {name: "New York", lat: 40.7128, lon: -74.0060, density: 27000},
+    {name: "Los Angeles", lat: 34.0522, lon: -118.2437, density: 8500},
+    {name: "Chicago", lat: 41.8781, lon: -87.6298, density: 12000},
+    {name: "Houston", lat: 29.7604, lon: -95.3698, density: 3600},
+    {name: "Phoenix", lat: 33.4484, lon: -112.0740, density: 3100}
+  ];
+
+  const formatHalfLife = (halfLifeYears) => {
+    if (halfLifeYears >= 1) {
+      return `${halfLifeYears.toFixed(2)} years`;
+    } else if (halfLifeYears * 365 >= 1) {
+      return `${(halfLifeYears * 365).toFixed(2)} days`;
+    } else {
+      return `${(halfLifeYears * 365 * 24).toFixed(2)} hours`;
+    }
+  };
+
+  const materialColors = {
+    "Uranium-238": "#e6194b", "Uranium-235": "#3cb44b", "Uranium-234": "#ffe119",
+    "Thorium-230": "#4363d8", "Plutonium-239": "#f58231", "Protactinium-231": "#911eb4",
+    "Radium-226": "#46f0f0", "Cesium-137": "#f032e6", "Strontium-90": "#bcf60c",
+    "Lead-210": "#fabebe", "Actinium-227": "#008080", "Thorium-234": "#e6beff"
+  };
+
+  const materials = {
+    "Uranium-238": { halfLifeYears: 4468000000, next: "Thorium-234" },
+    "Uranium-235": { halfLifeYears: 703800000, next: "Thorium-231" },
+    "Uranium-234": { halfLifeYears: 245500, next: "Thorium-230" },
+    "Thorium-230": { halfLifeYears: 75380, next: "Radium-226" },
+    "Plutonium-239": { halfLifeYears: 24100, next: "Uranium-235" },
+    "Protactinium-231": { halfLifeYears: 32760, next: "Actinium-227" },
+    "Radium-226": { halfLifeYears: 1600, next: null },
+    "Cesium-137": { halfLifeYears: 30.17, next: null },
+    "Strontium-90": { halfLifeYears: 28.8, next: null },
+    "Lead-210": { halfLifeYears: 22.3, next: null },
+    "Actinium-227": { halfLifeYears: 21.8, next: null },
+    "Thorium-234": { halfLifeYears: 0.063, next: null }
+  };
+
+  let drops = [];
+  let svg;
+  let growing = false;
+  let currentDrop = null;
+  let projection;
+
+  onMount(async () => {
+    const width = 960;
+    const height = 600;
+
+    svg = d3.select(mapContainer)
+      .append("svg")
+      .attr("width", width)
+      .attr("height", height);
+
+    projection = d3.geoAlbersUsa()
+      .translate([width / 2, height / 2])
+      .scale(1000);
+
+    const path = d3.geoPath().projection(projection);
+    const us = await d3.json("https://cdn.jsdelivr.net/npm/us-atlas@3/states-10m.json");
+
+    cities.forEach(city => {
+      const [projX, projY] = projection([city.lon, city.lat]);
+      city.x = projX;
+      city.y = projY;
+    });
+
+    svg.append("g")
+      .selectAll("path")
+      .data(topojson.feature(us, us.objects.states).features)
+      .join("path")
+      .attr("fill", "#ddd")
+      .attr("stroke", "#333")
+      .attr("d", path);
+
+    svg.append("g")
+      .selectAll("circle.city")
+      .data(cities)
+      .join("circle")
+      .attr("class", "city")
+      .attr("cx", d => d.x)
+      .attr("cy", d => d.y)
+      .attr("r", 4)
+      .attr("fill", "blue");
+		svg.append("g")
+  .selectAll("text.city-label")
+  .data(cities)
+  .join("text")
+  .attr("class", "city-label")
+  .attr("x", d => d.x + 6)  // Slightly offset right of dot
+  .attr("y", d => d.y + 3)  // Slightly center vertically
+  .text(d => d.name)
+  .attr("font-size", "10px")
+  .attr("fill", "black");
+
+
+    svg.on("mousedown", (event) => {
+      const [mx, my] = d3.pointer(event);
+      drops.push({ x: mx, y: my, material: selectedMaterial, startTime: timePassed, baseRadius: 5 });
+      currentDrop = drops[drops.length - 1];
+      growing = true;
+      growCircle();
+    });
+
+    svg.on("mouseup", () => { growing = false; currentDrop = null; });
+    svg.on("mouseleave", () => { growing = false; currentDrop = null; });
+  });
+
+  function growCircle() {
+    if (growing && currentDrop) {
+      currentDrop.baseRadius += 0.5;
+      render();
+      setTimeout(growCircle, 120);
+    }
+  }
+
+  function calculatePopulation() {
+    let newlyAffected = 0;
+    const lifespanYears = 70;
+
+    for (const drop of drops) {
+      const area = Math.PI * (drop.baseRadius ** 2);
+      const density = averageRuralDensity;
+      const annualNewAffected = (area * density) / lifespanYears;
+      newlyAffected += annualNewAffected * timerSpeed;
+    }
+
+    populationAffected += Math.round(newlyAffected);
+  }
+	function updateDecay() {
+  drops.forEach(drop => {
+    while (materials[drop.material] && materials[drop.material].next && (timePassed - drop.startTime) >= materials[drop.material].halfLifeYears) {
+      drop.startTime += materials[drop.material].halfLifeYears;
+      drop.material = materials[drop.material].next;
+    }
+  });
+
+  // 🌟 REMOVE drops where the material is stable and/or the half-life has expired
+  drops = drops.filter(drop => {
+    const material = materials[drop.material];
+    if (!material) return false; // material missing -> remove
+    if (material.halfLifeYears === Infinity) return false; // stable -> remove
+    const decayElapsed = timePassed - drop.startTime;
+    return decayElapsed < material.halfLifeYears;
+  });
+}
+
+
+  function render() {
+    if (!svg) return;
+
+    svg.selectAll("circle.radiation").data(drops)
+      .join("circle")
+      .attr("class", "radiation")
+      .attr("cx", d => d.x)
+      .attr("cy", d => d.y)
+      .attr("r", d => d.baseRadius)
+      .attr("fill", d => materialColors[d.material] || "red")
+      .attr("fill-opacity", d => Math.pow(0.5, (timePassed - d.startTime) / (materials[d.material]?.halfLifeYears || Infinity)))
+      .on("mousemove", (event, d) => {
+        const [x, y] = d3.pointer(event);
+        const materialInfo = materials[d.material];
+        const decayElapsed = timePassed - d.startTime;
+        const remaining = Math.max(materialInfo.halfLifeYears - decayElapsed, 0);
+        hoverInfo = { visible: true, x, y, text: `${d.material}\nRemaining: ${formatHalfLife(remaining)}` };
+      })
+      .on("mouseout", () => { hoverInfo.visible = false; });
+
+    calculatePopulation();
+  }
+
+  function startSimulation() {
+    simulationRunning = true;
+    const interval = setInterval(() => {
+      if (!simulationRunning) { clearInterval(interval); return; }
+      timePassed += timerSpeed;
+      render();
+    }, 100);
+  }
+
+  function stopSimulation() { simulationRunning = false; }
+  function resetSimulation() { drops = []; timePassed = 0; simulationRunning = false; populationAffected = 0; render(); }
+</script>
+
+<style>
+  .controls { margin-bottom: 10px; }
+  label { margin-right: 10px; }
+  button { margin-left: 10px; }
+  .hover-tooltip { position: absolute; background: rgba(0, 0, 0, 0.75); color: white; padding: 5px 8px; border-radius: 4px; pointer-events: none; font-size: 14px; white-space: pre-line; }
+  .population-box { background: #f0f0f0; padding: 10px; margin-top: 10px; border-radius: 8px; width: 300px; color: #000; font-weight: 600; }
+  .city-label { pointer-events: none; font-family: sans-serif; font-weight: bold; }
+	
+</style>
+
+<div class="controls">
+  <label>Material:
+    <select bind:value={selectedMaterial}>
+      {#each Object.keys(materials) as material}
+        <option value={material} style="color: {materialColors[material] || 'black'};">
+          {material} (Half-Life: {formatHalfLife(materials[material].halfLifeYears)})
+        </option>
+      {/each}
+    </select>
+  </label>
+
+  <label>Timer Speed (years/step):
+    <input type="range" min="1" max="2000" step="1" bind:value={timerSpeed}>
+    <span>{timerSpeed} years/step</span>
+  </label>
+
+  <div class="radiation-buttons">
+  <button on:click={startSimulation} class="btn start">Start</button>
+  <button on:click={stopSimulation} class="btn stop">Stop</button>
+  <button on:click={resetSimulation} class="btn reset">Reset</button>
+	<style>
+		
+	</style>
+</div>
+
+
+  <span>Years Passed: {timePassed}</span>
+</div>
+
+<div class="population-box">
+  <h3>Projected Population Affected:</h3>
+  <p>{populationAffected.toLocaleString()} people</p>
+</div>
+
+<div bind:this={mapContainer} style="position: relative; margin-top: 10px;"></div>
+
+{#if hoverInfo.visible}
+  <div class="hover-tooltip" style="top: {hoverInfo.y + 10}px; left: {hoverInfo.x + 10}px;">
+    {hoverInfo.text}
+  </div>
+{/if}
